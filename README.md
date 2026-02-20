@@ -1,102 +1,107 @@
 ## Introduction ##
-- An addon root hiding kernel patches and userspace module for KernelSU.
-
-- The userspace tool `ksu_susfs`, as well as the ksu module, require a susfs patched kernel to work.
+- A port of SUSFS v2.0.0 kernel patches for **Linux kernel 4.9** (non-GKI).
+- SUSFS is an addon root hiding framework for KernelSU. The userspace tool `ksu_susfs` and any KSU module using SUSFS require a SUSFS-patched kernel to work.
 
 # Warning #
-- This is only experimental code, that said it can harm your system or cause performance hit, **YOU ARE !! W A R N E D !!** already
+- This is experimental code. It can harm your system or cause a performance hit. **YOU ARE !! W A R N E D !!** already.
 
 ## Compatibility ##
-- The susfs kernel patches may differ for different kernel version or even on the same kernel version, you may need to create your own patches for your kernel.
+- Targets **Linux kernel 4.9** non-GKI devices.
+- Kernel 4.9 differs significantly from GKI (5.10+). Key adaptations made in this port:
+  - `fs/compat.c` hooks added (compat readdir path; GKI embeds this in `readdir.c`)
+  - `fs/proc/cmdline.c` spoofed (kernel 4.9 has no bootconfig)
+  - fsnotify API: `handle_event` (4.9, 8-param) vs `handle_inode_event` (5.1+, 6-param) — handled via version-gated compat wrapper
+  - IDA API: `ida_get_new_above`/`ida_remove` (4.9) instead of `ida_alloc_min`/`ida_free`
+  - `vfs_kern_mount` hooked instead of `vfs_create_mount` (doesn't exist in 4.9)
+  - `show_smaps_rollup` not hooked (function doesn't exist in 4.9)
+  - `mmap_sem` used instead of `mmap_lock` API
+  - `struct vfsmount.susfs_mnt_id_backup` added directly (no `ANDROID_KABI_*` macros)
+  - `CL_COPY_MNT_NS` flag defined in `fs/pnode.h`
 
-## Patch Instruction (For non-GKI only) ##
-**- Prerequisite -**
-1. All susfs patches are based on the **original official KernelSU (the one from weishu)** with **latest release tag**, so you should clone his repo with **latest release tag** for a better patching result.
-2. After cloning the KernelSU to your kernel source, inside KernelSU folder, apply a revert commit from `https://github.com/tiann/KernelSU/commit/898e9d4f8ca9b2f46b0c6b36b80a872b5b88d899`
-3. Also you have to manually implement the NON-KPROBE hooks in the kernel by yourself since `SUS_SU` feature is NOT supported for NON-GKI kernel anymore. See `https://kernelsu.org/guide/how-to-integrate-for-non-gki.html#manually-modify-the-kernel-source`
-4. Replace all lines starting with `#ifdef CONFIG_KPROBES` to `#if defined(CONFIG_KPROBES) && 0` for all files within KernelSU folder, this is to tell KernelSU not to use any kprobe hooks.
-5. SUSFS now supports AUTO_ADD_ features for Magick Mount KernelSU as long as you have `KSU_SUSFS_HAS_MAGIC_MOUNT` feature enabled.
+## Patch Instructions (Non-GKI, kernel 4.9) ##
 
-**- Apply SUSFS patches -**
-1. Clone the repo with a tag or release version, as they are more stable in general.
-2. Run `cp ./kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch $KERNEL_ROOT/KernelSU/`
-3. Run `cp ./kernel_patches/50_add_susfs_in_kernel-<kernel_version>.patch $KERNEL_ROOT/`
-4. Run `cp ./kernel_patches/fs/* $KERNEL_ROOT/fs/`
-5. Run `cp ./kernel_patches/include/linux/* $KERNEL_ROOT/include/linux/`
-6. Run `cd $KERNEL_ROOT/KernelSU` and then `patch -p1 < 10_enable_susfs_for_ksu.patch`
-7. Run `cd $KERNEL_ROOT` and then `patch -p1 < 50_add_susfs_in_kernel.patch`, **if there are failed patches, you may try to patch them manually by yourself.**
-8. If you want to make your kernel support other KSU manager variant, you can add its own hash size and hash in `ksu_is_manager_apk()` function in `KernelSU/kernel/apk_sign.c`
-9. Make sure again to have `CONFIG_KSU` and `CONFIG_KSU_SUSFS` enabled before building the kernel, some other SUSFS feature may be disabled by default, you may enable/disable them via `menuconfig`, `kernel defconfig`, or change the `default [y|n]` option under each `config KSU_SUSFS_` option in `$KernelSU_repo/kernel/Kconfig` if you build with a new defconfig every time.
-10. If your KernelSU manager is using magic mount, then you should enable **`KSU_SUSFS_HAS_MAGIC_MOUNT`** option so that mounts can be handled by AUTO_ADD_ features.
-11. For some compilor error, please refer to the section **[Known Compilor Issues]** below.
-12. For other building tips, please refer to the section **[Other Building Tips]** below.
+**Prerequisites:**
+1. Set up your kernel 4.9 source tree with KernelSU integrated (manual/non-kprobe hooks). See [KernelSU non-GKI guide](https://kernelsu.org/guide/how-to-integrate-for-non-gki.html#manually-modify-the-kernel-source).
+2. The SUSFS `Kconfig` options are expected to already be present in `$KERNEL_ROOT/KernelSU/kernel/Kconfig`. If not, add them manually (all `config KSU_SUSFS*` entries from the upstream SUSFS repo).
+3. Disable kprobe hooks in KernelSU by replacing `#ifdef CONFIG_KPROBES` with `#if defined(CONFIG_KPROBES) && 0` in all files within the KernelSU folder.
+
+**Apply SUSFS patches:**
+1. Copy the core files into the kernel source tree:
+   ```sh
+   cp kernel_patches/fs/susfs.c $KERNEL_ROOT/fs/
+   cp kernel_patches/include/linux/susfs.h $KERNEL_ROOT/include/linux/
+   cp kernel_patches/include/linux/susfs_def.h $KERNEL_ROOT/include/linux/
+   ```
+2. Apply the kernel patch:
+   ```sh
+   cd $KERNEL_ROOT
+   patch -p1 < /path/to/susfs4ksu-kernel-4.9/kernel_patches/50_add_susfs_in_kernel-4.9.patch
+   ```
+   If any hunks fail, apply them manually by inspecting the patch.
+3. Enable SUSFS options in your defconfig:
+   ```
+   CONFIG_KSU_SUSFS=y
+   CONFIG_KSU_SUSFS_SUS_PATH=y
+   CONFIG_KSU_SUSFS_SUS_MOUNT=y
+   CONFIG_KSU_SUSFS_SUS_KSTAT=y
+   CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+   CONFIG_KSU_SUSFS_ENABLE_LOG=y
+   CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+   CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+   CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+   CONFIG_KSU_SUSFS_SUS_MAP=y
+   ```
 
 ## Build ksu_susfs userspace tool ##
-1. Run `./build_ksu_susfs_tool.sh` to build the userspace tool `ksu_susfs`, and the arm64 and arm binary will be copied to `ksu_module_susfs/tools/` as well.
-2. Now you can also push the compiled `ksu_susfs` tool to `/data/adb/ksu/bin/` so that you can run it directly in adb root shell or termux root shell, as well as in your own ksu modules.
+> **⚠ Important:** The `kernel-4.9` branch of the [susfs4ksu](https://github.com/simonpunk/susfs4ksu) repository ships the **v1.5.5** userspace tool, which is **incompatible** with this v2.0.0 kernel patch. Using a mismatched userspace tool will result in broken or missing functionality.
+>
+> To obtain a v2.0.0-compatible `ksu_susfs` binary, use one of:
+> - A **KSU manager that bundles the v2 tool**, such as [SukiSU-Ultra@builtin](https://github.com/SukiSU-Ultra/SukiSU-Ultra/tree/builtin) — the recommended option.
+> - The **GKI kernel branches** of the susfs4ksu repository (e.g. `gki-android13-5.10`, `gki-android14-6.1`, etc.), which track v2 and include a compatible userspace tool. Build with `./build_ksu_susfs_tool.sh` from one of those branches.
+> - Always verify the version reported by `ksu_susfs show version` matches `v2.0.0` before use.
 
-## Build sus_su userspace tool (Deprecated) ##
-**--Important Notes--**
-- sus_su userspace tool is now deprecated, as newer xiaomi devices are found to have a root detection service running which is named "mrmd" and it is spawned by init process, and since sus_su mounted by overlayfs can't be umounted for process spawned by init process, so it will get detected unless there is a better umount scheme for init spawned process.
-
-**--Instruction for 1st mode (Deprecated)--**
-- sus_su userspace tool is an executable aimed to get a root shell by sending a request to a susfs fifo driver, this is exclusive for **"kprobe hook enabled KSU"** only, **DO NOT** use it if your KernelSU has kprobe **disabled**.
-- Only apps with root access granted by ksu manager are allow to run 'su'.
-- For best compatibility, sus_su requires overlayfs to allow all other 3rd party apps to execute 'su' to get root shell.
-- See `service.sh` in module templete for more details.
-
-1. Run `./build_sus_su_tool.sh` to build the sus_su executable, the arm64 and arm binary will be copied to `ksu_module_susfs/tools/`.
-2. Uncomment the line `#enable_sus_su` in service.sh to enable sus_su
-3. Run `./build_ksu_module.sh` to build the module and flash again.
-
-**--Instruction for 2nd mode--**
-- Just run `ksu_susfs sus_su 2` to disable core kprobe hooks and enable inline hooks for su.
-
-
-## Build susfs4ksu module ##
-- The ksu module here is just a demo to show how to use it.
-- It will also copy the `ksu_susfs` and `sus_su` tool to `/data/adb/ksu/bin/` as well when installing the module.
-
-1. ksu_susfs tool can be run in any stage scripts, post-fs-data.sh, services.sh, boot-completed.sh according to your own need.
-2. Run `./build_ksu_module.sh` to build the susfs KSU module.
+- Push the compiled binary to `/data/adb/ksu/bin/ksu_susfs` so it can be called from module scripts or a root shell.
 
 ## Usage of ksu_susfs and supported features ##
-- Run `ksu_susfs` in root shell for detailed usages.
-- See `$KernelSU_repo/kernel/Kconfig` for supported features after applying the susfs patches.
+- Run `ksu_susfs` in a root shell for detailed usage.
+- See `$KERNEL_ROOT/KernelSU/kernel/Kconfig` for the full list of supported features after applying the patches.
 
-## Other Building Tips ##
-- To only remove the `-dirty` string from kernel release string, open file `$KERNEL_ROOT/scripts/setlocalversion`, then look for all the lines that containing `printf '%s' -dirty`, and replace it with `printf '%s' ''`
-- Alternatively, If you want to directly hardcode the whole kernel release string, then open file `$KERNEL_ROOT/scripts/setlocalversion`, look for the last line `echo "$res"`, and for example, replace it with `echo "-android13-01-gb123456789012-ab12345678"`
-- To hardcode your kernel version string, open `$KERNEL_ROOT/scripts/mkcompile_h`, and look for line `UTS_VERSION="$(echo $UTS_VERSION $CONFIG_FLAGS $TIMESTAMP | cut -b -$UTS_LEN)"`, then for example, replace it with `UTS_VERSION="#1 SMP PREEMPT Mon Jan 1 18:00:00 UTC 2024"`
-- To hardcode your kernel version string which can be seen from /proc/version, open `$KERNEL_ROOT/scripts/mkcompile_h`, then search for variable name `LINUX_COMPILE_BY` and `LINUX_COMPILE_HOST`, then for example, append `LINUX_COMPILE_BY=build-user` and `LINUX_COMPILE_HOST=build-host` after line `UTS_VERSION="$(echo $UTS_VERSION $CONFIG_FLAGS $TIMESTAMP | cut -b -$UTS_LEN)"`
-- To spoof the `/proc/config.gz` with the stock config, 
+**Important runtime note:** `susfs_hide_sus_mnts_for_non_su_procs` is **0 by default** in the kernel. To hide KSU bind-mounts from `/proc/[pid]/mounts` for non-root processes, call:
+```sh
+ksu_susfs hide_sus_mnts_for_non_su_procs 1
+```
+This should be called from a module `service.sh` or configured via the KSU manager.
 
-   1. Make sure you are on the stock ROM and using stock kernel.
-   2. Use adb shell or root shell to pull your stock `/proc/config.gz` from your device to PC.
-   3. Decompress it using `gunzip` or whatever tools, then copy it to `$KERNEL_ROOT/arch/arm64/configs/stock_defconfig`
-   4. Open file `$KERNEL_ROOT/kernel/Makefile`.
-   5. Look for line `$(obj)/config_data: $(KCONFIG_CONFIG) FORCE`, and replace it with `$(obj)/config_data: arch/arm64/configs/stock_defconfig FORCE`
+## Building Tips ##
+- To remove the `-dirty` suffix from the kernel release string, open `$KERNEL_ROOT/scripts/setlocalversion`, find all lines containing `printf '%s' -dirty`, and replace with `printf '%s' ''`.
+- To hardcode the kernel release string, find the last `echo "$res"` line in `setlocalversion` and replace it, e.g.:
+  ```sh
+  echo "-android13-01-gb123456789012-ab12345678"
+  ```
+- To hardcode the kernel version string (visible in `/proc/version`), open `$KERNEL_ROOT/scripts/mkcompile_h`, find `UTS_VERSION=`, and append:
+  ```sh
+  LINUX_COMPILE_BY=build-user
+  LINUX_COMPILE_HOST=build-host
+  ```
+- To spoof `/proc/config.gz` with the stock config:
+  1. Pull the stock `/proc/config.gz` from the device and decompress it.
+  2. Copy to `$KERNEL_ROOT/arch/arm64/configs/stock_defconfig`.
+  3. In `$KERNEL_ROOT/kernel/Makefile`, change `$(obj)/config_data: $(KCONFIG_CONFIG) FORCE` to `$(obj)/config_data: arch/arm64/configs/stock_defconfig FORCE`.
 
-## Known Compiler Issues ##
-   1. error: no member named 'android_kabi_reservedx' in 'struct yyyyyyyy'
-
-      - Because normally the memeber `u64 android_kabi_reservedx;` doesn't exist in all structs with all kernel version below 4.19, and sometimes it is not guaranteed existed with kernel version >= 4.19 and <= 5.4, and even with GKI kernel, like some of the custom kernels has all of them disabled. So at this point if the susfs patches didn't have them patched for you, then what you need to do is to manually append the member to the end of the corresponding struct definition, it should be `u64 android_kabi_reservedx;` with the last `x` starting from `1`, like `u64 android_kabi_reserved1;`, `u64 android_kabi_reserved2;` and so on. You may also refer to patch from other branches like `kernel-4.14`, `kernel-4.9` of this repo for extra `diff` of the missing kabi members.
- 
-
-## Other Known Issues ##
-- Some of the File Explorer Apps cannot display a files/directory properly when a specific sub path of '/sdcard' or '/storage/emulated/0' is added to sus_path
-    1. Make sure the file explorer app has root allowed by KSU manager, because sus_path is only effective on no root allowed process uid.
-    2. It is strongly NOT recommended adding sub path of '/sdcard' or '/storage/emulated/0' to sus_path, because file explorer app is likely using android API to retrieve the list of files/directory, which means the calling uid will be changed to other system media provider app such as the google provider to execute the file lookup operation, and makes sus_path think that it is not a root allowed process uid so as to prevent them from showing up, unless the app obtains the root access first then use root privilege to list the files/directories without using android API.
+## Known Issues ##
+- Some file explorer apps cannot display files/directories properly when a sub-path of `/sdcard` or `/storage/emulated/0` is added to `sus_path`:
+  1. Make sure the file explorer app has root access granted by the KSU manager, since `sus_path` only applies to processes without root access.
+  2. It is strongly **not recommended** to add sub-paths of `/sdcard` or `/storage/emulated/0` to `sus_path`. File explorer apps typically use Android APIs that delegate file lookups to a system media provider (e.g. Google provider) running under a different UID, which SUSFS will treat as non-root and hide the paths.
 
 ## Credits ##
 - KernelSU: https://github.com/tiann/KernelSU
 - KernelSU fork: https://github.com/5ec1cff/KernelSU
 - @Kartatz: for ideas and original commit from https://github.com/Dominium-Apum/kernel_xiaomi_chime/pull/1/commits/74f8d4ecacd343432bb8137b7e7fbe3fd9fef189
+- SukiSU-Ultra: https://github.com/SukiSU-Ultra/SukiSU-Ultra
 
 ## Telegram ##
 - @simonpunk
 
-
-## Buy me a coffee ##
+## Buy @simonpunk a coffee ##
 - PayPal: kingjeffkimo@yahoo.com.tw
 - BTC: bc1qgkwvsfln02463zpjf7z6tds8xnpeykggtgk4kw
