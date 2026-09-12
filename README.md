@@ -1,5 +1,5 @@
 ## Introduction ##
-- A port of SUSFS v2.0.0 kernel patches for **Linux kernel 4.9** (non-GKI).
+- A port of SUSFS v2.3.0 kernel patches for **Linux kernel 4.9** (non-GKI).
 - SUSFS is an addon root hiding framework for KernelSU. The userspace tool `ksu_susfs` and any KSU module using SUSFS require a SUSFS-patched kernel to work.
 
 # Warning #
@@ -15,15 +15,33 @@
   - `vfs_kern_mount` hooked instead of `vfs_create_mount` (doesn't exist in 4.9)
   - `show_smaps_rollup` not hooked (function doesn't exist in 4.9)
   - `mmap_sem` used instead of `mmap_lock` API
-  - `struct vfsmount.susfs_mnt_id_backup` added directly (no `ANDROID_KABI_*` macros)
   - `CL_COPY_MNT_NS` flag defined in `fs/pnode.h`
+  - SUS_KSTAT: kernel 4.9 has no statx, so the `STATX_SUS_KSTAT[_FUSE]` marker upstream keeps in
+    `kstat->result_mask` is carried in a local inside `vfs_getattr_nosec()` instead
+  - OPEN_REDIRECT: 4.9's `do_last()` resolves and opens the final component together, so the
+    GKI pre-open hooks in `path_openat()`/`do_o_path()`/`do_tmpfile()` are replaced by the
+    `do_filp_open()` post-open re-open (covers tmpfile/O_PATH/regular uniformly); `vfs_readlink()`
+    does not exist, so its hook lives in `generic_readlink()`
+  - `filename_lookup()` un-staticed and declared in `fs/internal.h` for the new `fs/open.c` and
+    `fs/stat.c` su-compat hooks
+  - `<linux/security.h>` added to `susfs.c` for `security_sb_statfs()` (GKI pulls it in transitively)
+  - Dropped vs upstream: `include/linux/mount.h` (`susfs_mnt_id_backup` replaced by the
+    `VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT` bit in `mnt_flags`), `fs/devpts/inode.c`
+    (`ksu_handle_devpts` is not built under `CONFIG_KSU_SUSFS`), and
+    `security/selinux/{hooks,selinuxfs}.c` (4.9 has no `struct selinux_state`; selinux_hide is 5.10+)
 
 ## Patch Instructions (Non-GKI, kernel 4.9) ##
 
 **Prerequisites:**
-1. Set up your kernel 4.9 source tree with KernelSU integrated (manual/non-kprobe hooks). See [KernelSU non-GKI guide](https://kernelsu.org/guide/how-to-integrate-for-non-gki.html#manually-modify-the-kernel-source).
+1. Set up your kernel 4.9 source tree with a KernelSU that still builds on non-GKI.
+   [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) is the recommended choice: it carries a
+   `compat/` backport layer for old kernels (`ksu_access_ok`, `ksu_strncpy_from_user_nofault`,
+   a `fallthrough` backport, `<5.1` selinux compat) and ships susfs integration in `main`.
+   **SukiSU-Ultra's `builtin` branch no longer compiles on kernels older than 4.14.**
 2. The SUSFS `Kconfig` options are expected to already be present in `$KERNEL_ROOT/KernelSU/kernel/Kconfig`. If not, add them manually (all `config KSU_SUSFS*` entries from the upstream SUSFS repo).
-3. Disable kprobe hooks in KernelSU by replacing `#ifdef CONFIG_KPROBES` with `#if defined(CONFIG_KPROBES) && 0` in all files within the KernelSU folder.
+3. On ReSukiSU, `CONFIG_KSU_SUSFS` is itself the "KernelSU Hooking Method" choice (mutually
+   exclusive with `KSU_TRACEPOINT_HOOK` / `KSU_MANUAL_HOOK`) — select it and the kernel-side
+   su-compat hooks come from this patch, guarded by `CONFIG_KSU_SUSFS*`.
 
 **Apply SUSFS patches:**
 1. Copy the core files into the kernel source tree:
@@ -53,12 +71,13 @@
    ```
 
 ## Build ksu_susfs userspace tool ##
-> **⚠ Important:** The `kernel-4.9` branch of the [susfs4ksu](https://github.com/simonpunk/susfs4ksu) repository ships the **v1.5.5** userspace tool, which is **incompatible** with this v2.0.0 kernel patch. Using a mismatched userspace tool will result in broken or missing functionality.
+> **⚠ Important:** The `kernel-4.9` branch of the [susfs4ksu](https://github.com/simonpunk/susfs4ksu) repository ships the **v1.5.5** userspace tool, which is **incompatible** with this v2.3.0 kernel patch. Using a mismatched userspace tool will result in broken or missing functionality.
 >
-> To obtain a v2.0.0-compatible `ksu_susfs` binary, use one of:
-> - A **KSU manager that bundles the v2 tool**, such as [SukiSU-Ultra@builtin](https://github.com/SukiSU-Ultra/SukiSU-Ultra/tree/builtin) — the recommended option.
+> To obtain a v2.3.0-compatible `ksu_susfs` binary, use one of:
+> - A **KSU manager that bundles the v2 tool**, such as [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) — the recommended option.
 > - The **GKI kernel branches** of the susfs4ksu repository (e.g. `gki-android13-5.10`, `gki-android14-6.1`, etc.), which track v2 and include a compatible userspace tool. Build with `./build_ksu_susfs_tool.sh` from one of those branches.
-> - Always verify the version reported by `ksu_susfs show version` matches `v2.0.0` before use.
+> - Always verify the version reported by `ksu_susfs show version` matches `v2.3.0` before use.
+> - Note: in v2.3.0 `add_open_redirect` takes a third `<UID_SCHEME>` argument.
 
 - Push the compiled binary to `/data/adb/ksu/bin/ksu_susfs` so it can be called from module scripts or a root shell.
 
